@@ -1,0 +1,4 @@
+﻿*.pdf
+__pycache__/
+_extract.log
+_backup/
