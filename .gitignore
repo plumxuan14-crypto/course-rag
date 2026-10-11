@@ -2,3 +2,4 @@
 __pycache__/
 _extract.log
 _backup/
+chunks.json
