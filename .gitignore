@@ -1,5 +1,5 @@
 ﻿*.pdf
+*.pptx
 __pycache__/
 _extract.log
 _backup/
-chunks.json
