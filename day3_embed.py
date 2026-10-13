@@ -3,6 +3,9 @@
 用法：
     python day3_embed.py            调用 API 算向量
     python day3_embed.py --test     做相似度实验
+
+注意：
+    .env 必须在【模块最开始】就加载好，否则后面读环境变量会拿到默认值。
 """
 
 import json
@@ -14,37 +17,45 @@ from pathlib import Path
 from dotenv import load_dotenv
 from openai import OpenAI
 
+# ============ 先加载 .env，再读任何环境变量 ============
+# override=True：.env 里的值优先，强行覆盖环境里的同名变量
+load_dotenv(override=True)
+
 CHUNKS = Path("chunks.json")
 VECTORS = Path("vectors.json")
-BATCH = 10          # 每次发给 API 的块数（阿里云 embedding 单次最多 10 条）
-MIN_SCORE = 0.35    # 相似度低于这个值，认为"课件里没有"
+BATCH = 10
+MIN_SCORE = 0.35
+
+EMBED_MODEL = os.getenv("DASHSCOPE_EMBED_MODEL", "text-embedding-v3")
+API_KEY = os.getenv("DASHSCOPE_API_KEY")
+BASE_URL = os.getenv("DASHSCOPE_BASE_URL")
 
 
-def get_client():
-    """读取 .env，创建 API 客户端。"""
-    load_dotenv()
-    key = os.getenv("DASHSCOPE_API_KEY")
-    base = os.getenv("DASHSCOPE_BASE_URL")
-    if not key or not base:
-        print("读不到 .env 里的配置，请检查 DASHSCOPE_API_KEY 和 DASHSCOPE_BASE_URL")
+def get_client() -> OpenAI:
+    """创建 API 客户端。"""
+    if not API_KEY or not BASE_URL:
+        print("读不到 .env 配置，请检查 DASHSCOPE_API_KEY 和 DASHSCOPE_BASE_URL")
         sys.exit(1)
-    return OpenAI(api_key=key, base_url=base)
+    return OpenAI(api_key=API_KEY, base_url=BASE_URL)
 
 
 def do_embed() -> None:
-    model = os.getenv("DASHSCOPE_EMBED_MODEL", "text-embedding-v3")
+    if not CHUNKS.exists():
+        print(f"找不到 {CHUNKS}，请先运行：python day2_chunk.py")
+        return
+
     chunks = json.loads(CHUNKS.read_text(encoding="utf-8"))
     client = get_client()
 
     print(f"载入 {len(chunks)} 块文字")
-    print(f"使用模型：{model}")
+    print(f"使用模型：{EMBED_MODEL}")
 
     vectors = []
     for start in range(0, len(chunks), BATCH):
         batch = chunks[start:start + BATCH]
         texts = [c["text"] for c in batch]
 
-        response = client.embeddings.create(model=model, input=texts)
+        response = client.embeddings.create(model=EMBED_MODEL, input=texts)
         ordered = sorted(response.data, key=lambda item: item.index)
         vectors.extend([item.embedding for item in ordered])
 
@@ -59,6 +70,8 @@ def do_embed() -> None:
             "page": chunk["page"],
             "text": chunk["text"],
             "vector": [round(float(v), 6) for v in vector],
+            # 记录这条向量是哪个模型生成的，将来可以校验
+            "model": EMBED_MODEL,
         })
 
     VECTORS.write_text(json.dumps(records, ensure_ascii=False), encoding="utf-8")
@@ -66,6 +79,7 @@ def do_embed() -> None:
     size_mb = VECTORS.stat().st_size / 1024 / 1024
     print("=" * 50)
     print(f"共 {len(records)} 条向量，维度 {len(records[0]['vector'])}")
+    print(f"使用的模型：{EMBED_MODEL}")
     print(f"已保存到：{VECTORS.resolve()}  ({size_mb:.1f} MB)")
     print("=" * 50)
 
@@ -85,20 +99,22 @@ def do_test() -> None:
         print("还没有 vectors.json，先运行：python day3_embed.py")
         return
 
-    model = os.getenv("DASHSCOPE_EMBED_MODEL", "text-embedding-v3")
     records = json.loads(VECTORS.read_text(encoding="utf-8"))
     client = get_client()
+
+    print(f"已存向量用的模型：{records[0].get('model', '未记录')}")
+    print(f"当前 .env 模型：{EMBED_MODEL}")
 
     questions = [
         "什么是顺序结构？",
         "分支结构有哪几种？",
-        "循环和分支有什么区别？",
+        "scanf 怎么用？",
         "今天中午吃什么？",
         "量子力学的测不准原理是什么？",
     ]
 
     for question in questions:
-        response = client.embeddings.create(model=model, input=[question])
+        response = client.embeddings.create(model=EMBED_MODEL, input=[question])
         qvec = response.data[0].embedding
 
         scored = sorted(
@@ -113,11 +129,10 @@ def do_test() -> None:
         print("=" * 60)
         for score, record in scored[:3]:
             text = record["text"][:70].replace("\n", " ")
-            print(f"  {score:.3f}  [{record['source'][:8]}.. 第{record['page']}页] {text}")
+            print(f"  {score:.3f}  [{record['source'][:10]} 第{record['page']}页] {text}")
 
-        top = scored[0][0]
-        if top < MIN_SCORE:
-            print(f"  → 最高分只有 {top:.3f}，课件里大概没有相关内容")
+        if scored[0][0] < MIN_SCORE:
+            print(f"  → 最高分只有 {scored[0][0]:.3f}，课件里大概没有相关内容")
 
 
 def main() -> None:
