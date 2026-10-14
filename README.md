@@ -616,3 +616,86 @@ course-rag/
 | 相似度计算 | 余弦相似度（手写实现） |
 
 **没有用任何 RAG 框架**（如 LangChain / LlamaIndex）—— 全部逻辑手写，为了彻底理解每一步在做什么。
+
+### 10. Python 3.15 装不了 streamlit
+
+**现象**：
+
+    error: Microsoft Visual C++ 14.0 or greater is required
+    ERROR: Failed to build 'pyarrow' when installing build dependencies
+
+**原因**：streamlit 依赖 pyyaml 和 pyarrow，这两个包都没有 Python 3.15 的
+预编译 wheel，pip 只能从源码编译，而编译需要 Visual Studio 的 C++ 工具链。
+
+**这已经是第二次因为 3.15 太新而踩坑**（第一次是 PyTorch）。
+
+**解决**：改用 Python 标准库自写网页版（`http.server`），零依赖：
+
+    from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+**教训**：生产环境不要用刚发布的大版本。Python 3.15 发布初期，
+大量库还没适配。
+
+### 11. Git 分叉：网页提交和本地提交冲突
+
+**现象**：
+
+    git push
+     ! [rejected]  main -> main (non-fast-forward)
+    error: failed to push some refs
+
+**原因**：在 GitHub 网页上创建 LICENSE，同时本地也有新提交（网页版代码），
+两条线各自前进，历史「分叉」了。
+
+**解决**：
+
+    git pull      # 拉取远程并合并
+    git push      # 再推送
+
+**坑中坑**：`git pull` 触发合并时会打开 Vim 让写合并说明，
+不熟悉 Vim 的人会完全卡住。
+
+**解法**：
+
+    # 方案 A：改用记事本
+    git config --global core.editor notepad
+
+    # 方案 B：直接用默认说明，不打开编辑器
+    git commit --no-edit
+
+    # 方案 C：如果卡在 Vim 里
+    按 Esc，输入 :wq，回车
+
+**教训**：尽量在一处操作（全在本地 或 全在网页）。混用容易分叉。
+
+### 12. Python 三引号字符串吃掉了 JavaScript 的转义符
+
+**现象**：网页版把模型回答里的 Markdown 原样显示出来，
+`**粗体**` 和代码块的三反引号都没有被渲染。
+
+**原因**：前端渲染函数写在 Python 的三引号字符串里：
+
+    PAGE = """...javascript...
+      body.replace(/```[a-zA-Z]*\\n?([\\s\\S]*?)```/g, ...)
+    ..."""
+                                        ↑↑
+    Python 把 \\n 变成了字面的「反斜杠 + n」两个字符，
+    而 JS 正则需要的是真正的换行符，所以永远匹配不到。
+
+**排查过程**：
+1. 确认浏览器缓存不是问题（Ctrl+F5 强刷）
+2. 确认文件确实更新了（Select-String 搜 renderMarkdown）
+3. 逐条检查正则，发现转义层数不对
+
+**解决**：
+
+    1. 用 Python 的原始字符串 raw string：
+       PAGE = r"""..."""
+
+    2. 更彻底的做法：干脆不用反斜杠转义，用代码生成特殊字符：
+       const NL = String.fromCharCode(10);            // 换行符
+       const fence = String.fromCharCode(96, 96, 96); // 三个反引号
+       然后用 split() 切分代码块，而不是用正则匹配。
+
+**教训**：跨语言嵌套字符串时，转义符是最容易出错的地方。
+能用别的办法绕开反斜杠，就绕开。
