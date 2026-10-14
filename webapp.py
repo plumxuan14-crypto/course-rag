@@ -39,7 +39,7 @@ SYSTEM_PROMPT = """你是一个课程课件问答助手。请严格根据我提�
 1. 只使用【课件原文】里的信息回答，不要编造。
 2. 如果原文里没有答案，就直接说"课件里没有相关内容"，不要猜测。
 3. 回答要简洁清楚，条理分明，适合大学生理解。
-4. 如果原文里有代码示例，可以引用出来。
+4. 如果原文里有代码示例，请用代码块包裹（三个反引号加 c）。
 5. 不要提到"根据原文""根据上下文"这类话，直接回答问题本身。
 """
 
@@ -56,10 +56,7 @@ CLIENT = OpenAI(api_key=API_KEY, base_url=BASE_URL)
 
 
 def call_api(func, *args, **kwargs):
-    """调用 API，网络失败时自动重试。
-
-    真实项目必须有这个：网络抖动是常态，不能一抖就整个失败。
-    """
+    """调用 API，网络失败时自动重试。"""
     last_error = None
     for attempt in range(RETRY):
         try:
@@ -157,7 +154,8 @@ def do_answer(question: str, top_k: int) -> dict:
 
 
 # ============ 前端页面 ============
-PAGE = """<!DOCTYPE html>
+# 注意：用 r""" 原始字符串，避免 Python 提前把 \n \s 这类转义吃掉
+PAGE = r"""<!DOCTYPE html>
 <html lang="zh-CN">
 <head>
 <meta charset="utf-8">
@@ -196,7 +194,21 @@ PAGE = """<!DOCTYPE html>
     background: #eef1f4; border: 1px solid #d8dee4; border-radius: 20px;
   }
   .chip:hover { background: #e3e8ed; }
-  .answer { white-space: pre-wrap; line-height: 1.75; font-size: 15px; }
+  .answer { line-height: 1.8; font-size: 15px; }
+  .answer pre {
+    background: #f6f8fa; border: 1px solid #d8dee4; border-radius: 8px;
+    padding: 12px 14px; overflow-x: auto; margin: 10px 0;
+    font-family: Consolas, "Courier New", monospace;
+    font-size: 13.5px; line-height: 1.6; white-space: pre;
+  }
+  .answer code {
+    font-family: Consolas, "Courier New", monospace;
+    background: #f6f8fa; padding: 1px 5px; border-radius: 4px; font-size: 13.5px;
+  }
+  .answer pre code { background: none; padding: 0; }
+  .answer strong { font-weight: 700; }
+  .answer ul { margin: 6px 0 10px; padding-left: 22px; }
+  .answer li { margin-bottom: 4px; }
   .label { font-weight: 700; font-size: 15px; margin-bottom: 10px; }
   .warn { color: #9a6700; }
   .src { border-top: 1px dashed #d8dee4; padding-top: 12px; margin-top: 12px; }
@@ -254,6 +266,57 @@ function escapeHtml(s) {
   return String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
 }
 
+// ---- 轻量 Markdown 渲染：代码块、粗体、列表 ----
+function renderMarkdown(text) {
+  const codeBlocks = [];
+  const NL = String.fromCharCode(10);
+  let body = String(text);
+
+  // 1. 先把 ``` 代码块抽出来，换成占位符保护起来
+  const fence = String.fromCharCode(96, 96, 96);   // 就是三个反引号
+  const parts = body.split(fence);
+
+  if (parts.length >= 3) {
+    body = parts[0];
+    for (let i = 1; i + 1 < parts.length; i += 2) {
+      let code = parts[i];
+      // 去掉开头的语言标记（如 c、python）
+      const firstBreak = code.indexOf(NL);
+      if (firstBreak !== -1 && firstBreak <= 12) {
+        const lang = code.slice(0, firstBreak).trim();
+        if (/^[a-zA-Z0-9+#-]*$/.test(lang)) {
+          code = code.slice(firstBreak + 1);
+        }
+      }
+      codeBlocks.push(code.replace(/[\r\n]+$/, ""));
+      body += String.fromCharCode(0) + "CB" + (codeBlocks.length - 1) + String.fromCharCode(0);
+    }
+    body += parts[parts.length - 1];
+  }
+
+  // 2. 转义 HTML，防止 XSS
+  body = escapeHtml(body);
+
+  // 3. 粗体 **文字**
+  body = body.replace(/\*\*([^*<>]+)\*\*/g, "<strong>$1</strong>");
+
+  // 4. 列表项 - 文字
+  body = body.replace(/^[ \t]*[-*][ \t]+(.+)$/gm, "<li>$1</li>");
+  body = body.replace(/(?:<li>[\s\S]*?<\/li>[\r\n]*)+/g, function (m) {
+    return "<ul>" + m.replace(/[\r\n]+/g, "") + "</ul>";
+  });
+
+  // 5. 换行
+  body = body.replace(/[\r\n]/g, "<br>");
+
+  // 6. 把占位符换回真正的代码块
+  body = body.replace(/\x00CB(\d+)\x00/g, function (m, index) {
+    return "<pre><code>" + escapeHtml(codeBlocks[Number(index)]) + "</code></pre>";
+  });
+
+  return body;
+}
+
 async function ask() {
   const question = qInput.value.trim();
   if (!question) return;
@@ -277,7 +340,7 @@ async function ask() {
     let html = '<div class="card">';
     html += '<div class="label">💡 回答</div>';
     html += '<div class="answer' + (data.found ? '' : ' warn') + '">'
-          + escapeHtml(data.answer) + '</div>';
+          + renderMarkdown(data.answer) + '</div>';
 
     if (data.sources && data.sources.length) {
       html += '<div style="margin-top:18px"><div class="label">📖 参考来源</div>';
@@ -395,7 +458,6 @@ def main() -> None:
     except Exception:
         pass
 
-    # ThreadingHTTPServer：能同时处理多个请求，不会被长请求卡住
     server = ThreadingHTTPServer(("127.0.0.1", PORT), Handler)
     try:
         server.serve_forever()
